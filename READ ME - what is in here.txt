@@ -1,0 +1,31 @@
+ClipMint keeps everything it makes in this folder.
+
+  shorts
+      Your finished clips, one folder per video, named after that video.
+      This is the folder you want. Each run folder also holds a clips.json,
+      which is how the app remembers titles, scores and spans -- delete it
+      and the clips still play, but the app forgets what they were.
+
+  output
+      The full videos downloaded to cut those clips from, named after the
+      video with its YouTube id in brackets, plus the transcripts made from
+      them (a .json beside each video).
+
+      These are the big files. Deleting them is safe and frees the most
+      space -- clips you have already made are untouched. Re-running the same
+      video downloads it again.
+
+      output-roll holds stock footage fetched from Pexels for B-roll, if
+      you turned that on. Safe to delete; it is fetched again when needed.
+
+SAFE TO DELETE
+  Anything inside "output". Any run folder inside "shorts" whose clips you no
+  longer want. Settings has a "Clear space" button that does the first of
+  those for you.
+
+BEST LEFT ALONE
+  clips.json inside a run folder, unless you are happy to lose the titles and
+  rankings for those clips.
+
+All of it was made on this PC. Nothing here is uploaded anywhere unless you
+connect your YouTube channel in the app and press Upload on a clip.

@@ -1,0 +1,43 @@
+# Windows version resource, compiled into the exe by PyInstaller.
+#
+# This is what fills in right-click -> Properties -> Details. Without it the
+# app ships as an unnamed binary with no author, which is both worse for the
+# user deciding whether to trust it and worse for anyone trying to work out
+# where a copy came from.
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=(1, 26, 1, 0),
+    prodvers=(1, 26, 1, 0),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo([
+      StringTable(
+        # 0409 = US English, 04b0 = Unicode
+        '040904b0',
+        [
+          StringStruct('CompanyName', 'Parth Bhadana'),
+          StringStruct('FileDescription', 'ClipMint — turn long videos into Shorts, Reels and TikToks'),
+          StringStruct('FileVersion', '1.26.1'),
+          StringStruct('InternalName', 'ClipMint'),
+          StringStruct('LegalCopyright',
+                       'Copyright (c) 2026 Parth Bhadana. MIT licensed. '
+                       'github.com/kleZ799/clipmint'),
+          StringStruct('OriginalFilename', 'ClipMint.exe'),
+          StringStruct('ProductName', 'ClipMint'),
+          StringStruct('ProductVersion', '1.26.1'),
+          StringStruct('Comments',
+                       'Built by Parth Bhadana. '
+                       'youtube.com/@ParthBhadana799 | github.com/kleZ799 | '
+                       'linkedin.com/in/parth-bhadana-530014202 | '
+                       'discord.gg/jnMrGbBz3m'),
+        ])
+    ]),
+    VarFileInfo([VarStruct('Translation', [1033, 1200])])
+  ]
+)

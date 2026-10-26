@@ -1,0 +1,25 @@
+-r requirements-local.txt
+
+# The interface, on every platform. The release workflow installs this file on
+# Windows, macOS and Linux alike, so anything platform-specific here carries a
+# marker rather than living only in a per-platform file.
+
+# Web UI (python -m webapp)
+fastapi>=0.110
+# Imported directly for the request models. fastapi brings it, but naming it
+# keeps a fastapi release that loosens its pin from surprising anyone.
+pydantic>=2.0
+uvicorn[standard]>=0.27
+python-multipart>=0.0.9
+
+# Native app window. Without it desktop.py falls back to your browser.
+pywebview>=5.0
+
+# pywebview reaches its macOS backend through PyObjC rather than a binding of
+# its own, and does not pull these in itself -- so without them the mac build
+# opens a browser tab instead of an app window, which is the one thing the
+# desktop build exists to avoid. Windows needs none of it: there the backend is
+# Edge WebView2, which ships with the OS.
+pyobjc-core>=10.0; sys_platform == "darwin"
+pyobjc-framework-Cocoa>=10.0; sys_platform == "darwin"
+pyobjc-framework-WebKit>=10.0; sys_platform == "darwin"

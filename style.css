@@ -1,0 +1,197 @@
+:root {
+  --bg: #0f0f0f;
+  --raised: #181818;
+  --line: #2a2a2a;
+  --text: #f1f1f1;
+  --text-2: #aaaaaa;
+  --red: #ff0033;
+  --red-deep: #cc0000;
+  --link: #3ea6ff;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #ffffff;
+    --raised: #f6f6f6;
+    --line: #e2e2e2;
+    --text: #0f0f0f;
+    --text-2: #555555;
+    --red: #e60028;
+    --red-deep: #b3001f;
+    --link: #065fd4;
+  }
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.65 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+a { color: var(--link); }
+img { max-width: 100%; height: auto; }
+
+.wrap { max-width: 880px; margin: 0 auto; padding: 0 16px; }
+
+header.top {
+  border-bottom: 1px solid var(--line);
+}
+header.top .wrap {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 16px; min-height: 64px; flex-wrap: wrap;
+}
+.brand {
+  display: inline-flex; align-items: center; gap: 10px;
+  color: var(--text); text-decoration: none; font-weight: 700; font-size: 19px;
+}
+.brand img { width: 30px; height: 30px; border-radius: 8px; }
+nav.links { display: flex; gap: 18px; flex-wrap: wrap; font-size: 15px; }
+nav.links a { color: var(--text-2); text-decoration: none; }
+nav.links a:hover { color: var(--text); }
+
+/* Author block, as in the app's top bar: name first, profile icons under it. */
+.by {
+  display: flex; align-items: center; gap: 10px;
+  padding-left: 14px; border-left: 1px solid var(--line); white-space: nowrap;
+}
+.by-who { display: flex; flex-direction: column; line-height: 1.2; }
+.by-label { font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--text-2); }
+.by-name { font-size: 13px; font-weight: 600; color: var(--text); }
+.by-links { display: flex; gap: 2px; }
+.bl {
+  width: 32px; height: 32px; display: grid; place-items: center;
+  border-radius: 50%; color: var(--text-2);
+}
+.bl svg { width: 17px; height: 17px; }
+.bl:hover { background: var(--raised); color: var(--text); }
+.bl.yt:hover { color: var(--red); }
+.bl.li:hover { color: #0a66c2; }
+.bl.dc:hover { color: #5865f2; }
+/* The one icon that asks for something rather than pointing somewhere, so it
+   keeps its colour at rest and beats twice on hover. */
+.bl.donate { color: var(--red); }
+.bl.donate:hover { background: rgba(255, 0, 51, .14); }
+.bl.donate:hover svg { animation: beat .7s ease 2; }
+@keyframes beat {
+  0%, 100% { transform: scale(1); }
+  28%      { transform: scale(1.22); }
+  55%      { transform: scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .bl.donate:hover svg { animation: none; }
+}
+/* On a phone the links drop to their own row, under the name and the icons. */
+@media (max-width: 760px) {
+  header.top .wrap { padding-top: 10px; padding-bottom: 10px; row-gap: 6px; }
+  header.top nav.links { order: 3; width: 100%; row-gap: 2px; }
+  .by { border-left: 0; padding-left: 0; }
+}
+
+.hero { padding: 56px 0 28px; }
+.hero h1 { font-size: clamp(30px, 6vw, 46px); line-height: 1.15; margin: 0 0 16px; }
+.hero p.lead { font-size: 19px; color: var(--text-2); margin: 0 0 26px; max-width: 640px; }
+
+.btns { display: flex; gap: 12px; flex-wrap: wrap; }
+.btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-height: 44px; padding: 0 20px; border-radius: 999px;
+  font-weight: 600; text-decoration: none; border: 1px solid var(--line);
+  color: var(--text); background: var(--raised);
+}
+.btn.primary { background: var(--red); border-color: var(--red); color: #fff; }
+.btn.primary:hover { background: var(--red-deep); }
+
+.shot { margin: 30px 0 10px; border-radius: 14px; border: 1px solid var(--line); display: block; }
+video.shot { width: 100%; height: auto; margin-top: 16px; background: #000; }
+
+section { padding: 26px 0; border-top: 1px solid var(--line); }
+section h2 { font-size: 24px; margin: 0 0 12px; }
+section p, section li { color: var(--text-2); }
+section b, section strong { color: var(--text); }
+
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+.card { background: var(--raised); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; }
+.card h3 { margin: 0 0 6px; font-size: 17px; }
+.card p { margin: 0; font-size: 15px; }
+
+.card.dl { display: flex; flex-direction: column; gap: 8px; }
+.card.dl p.meta { color: var(--text); font-size: 14px; }
+.card.dl .btn { margin-top: auto; }
+.tag {
+  display: inline-block; vertical-align: 2px; margin-left: 6px; padding: 1px 8px;
+  border: 1px solid var(--line); border-radius: 999px;
+  font-size: 12px; font-weight: 600; color: var(--text-2);
+}
+
+/* The caption styles, drawn with the same fonts the app burns into clips. */
+@font-face { font-family: "CM Bold"; src: url("fonts/Montserrat-Black.ttf") format("truetype"); font-display: swap; }
+@font-face { font-family: "CM Punch"; src: url("fonts/Anton-Regular.ttf") format("truetype"); font-display: swap; }
+@font-face { font-family: "CM Clean"; src: url("fonts/Montserrat-ExtraBold.ttf") format("truetype"); font-display: swap; }
+@font-face { font-family: "CM Comic"; src: url("fonts/Bangers-Regular.ttf") format("truetype"); font-display: swap; }
+.capstrip { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; margin: 18px 0 8px; }
+.capstrip figure { margin: 0; text-align: center; }
+.capstrip figcaption { margin-top: 8px; font-size: 14px; color: var(--text-2); }
+.phone {
+  position: relative; aspect-ratio: 9 / 16; border-radius: 14px; overflow: hidden;
+  border: 1px solid var(--line);
+  background: linear-gradient(160deg, #3a1d5c 0%, #1b2a4a 45%, #0e1a1f 100%);
+}
+.phone .cap {
+  position: absolute; left: 6%; right: 6%; top: 70%; transform: translateY(-50%);
+  margin: 0; color: #fff; text-align: center; line-height: 1.1; font-size: clamp(15px, 2.4vw, 21px);
+}
+.phone .cap b { font-weight: inherit; }
+.cap-bold { font-family: "CM Bold", sans-serif; -webkit-text-stroke: .09em #000; paint-order: stroke fill; }
+.cap-bold b { color: #ffe14d; }
+.cap-punch { font-family: "CM Punch", sans-serif; font-size: clamp(19px, 3vw, 27px) !important; letter-spacing: .02em; -webkit-text-stroke: .07em #000; paint-order: stroke fill; }
+.cap-punch b { color: #4dff7c; }
+.phone .cap-clean {
+  font-family: "CM Clean", sans-serif; left: 50%; right: auto; transform: translate(-50%, -50%);
+  background: #141414; padding: .15em .45em; border-radius: .15em; white-space: nowrap;
+  font-size: clamp(12px, 1.8vw, 15px);
+}
+.cap-clean b { color: #ffd54a; }
+.cap-comic { font-family: "CM Comic", sans-serif; letter-spacing: .04em; -webkit-text-stroke: .09em #3b1f6e; paint-order: stroke fill; }
+.cap-comic b { color: #ffd43b; }
+
+.socials { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; margin: 18px 0; }
+.social {
+  display: flex; align-items: center; gap: 12px; padding: 12px 14px;
+  background: var(--raised); border: 1px solid var(--line); border-radius: 12px;
+  color: var(--text); text-decoration: none;
+}
+.social:hover { border-color: var(--text-2); }
+.social svg { width: 22px; height: 22px; flex: none; }
+.social.yt svg { color: var(--red); }
+.social.li svg { color: #0a66c2; }
+.social.dc svg { color: #5865f2; }
+.social span { display: flex; flex-direction: column; line-height: 1.3; min-width: 0; }
+.social b { font-size: 15px; }
+.social i { font-style: normal; font-size: 13px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; }
+.give { display: flex; align-items: center; gap: 8px 16px; flex-wrap: wrap; }
+.give p { margin: 0; font-size: 15px; }
+.give .btn svg { width: 17px; height: 17px; margin-right: 8px; }
+.give .btn:hover svg { animation: beat .7s ease 2; }
+@media (prefers-reduced-motion: reduce) {
+  .give .btn:hover svg { animation: none; }
+}
+
+footer { border-top: 1px solid var(--line); padding: 26px 0 40px; color: var(--text-2); font-size: 14px; }
+footer .wrap { display: flex; gap: 10px 22px; flex-wrap: wrap; }
+
+/* The privacy page, rendered from PRIVACY.md */
+article.doc { padding: 36px 0 20px; }
+article.doc h1 { font-size: clamp(28px, 5vw, 38px); line-height: 1.2; margin: 0 0 8px; }
+article.doc h2 { font-size: 22px; margin: 34px 0 10px; padding-top: 14px; border-top: 1px solid var(--line); }
+article.doc p, article.doc li { color: var(--text-2); }
+article.doc strong { color: var(--text); }
+article.doc code { background: var(--raised); border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; font-size: 0.9em; }
+.table-scroll { overflow-x: auto; }
+/* Diagrams are drawn in monospace and can't wrap; they scroll inside their box. */
+article.doc pre { overflow-x: auto; background: var(--raised); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; font-size: 13px; line-height: 1.45; }
+article.doc pre code { background: none; border: 0; padding: 0; font-size: inherit; }
+article.doc table { border-collapse: collapse; width: 100%; min-width: 520px; margin: 12px 0; font-size: 15px; }
+article.doc th, article.doc td { border: 1px solid var(--line); padding: 9px 11px; text-align: left; vertical-align: top; }
+article.doc th { background: var(--raised); color: var(--text); }
+article.doc td { color: var(--text-2); }

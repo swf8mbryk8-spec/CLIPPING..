@@ -1,0 +1,75 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+venv/
+output/
+# rendered clips and the job.json manifest written beside them
+shorts/
+
+# Nothing the app produces from a real video ever belongs in here. These are
+# the formats a download, a render, or a test run of the exe leaves behind —
+# any one of them would put a personal video in the repo and make it heavy.
+*.mp4
+*.mkv
+*.webm
+*.mov
+*.avi
+*.m4v
+*.ts
+*.flv
+*.m4a
+*.wav
+*.aac
+*.mp3
+*.srt
+*.vtt
+*.part
+*.ytdl
+# ...except the showcase: a tour of the app made on purpose for the README
+# and the site, not something the app produced from a video.
+!assets/showcase/*.mp4
+.DS_Store
+smoketest/
+run*.log
+run*.err
+# stderr captured from a packaged run, same as the .log beside it
+*.err
+result.json
+highlights*.json
+render_*.py
+
+# web UI runtime artefacts
+webapp_output/
+webapp_uploads/
+*.log
+*.tmp
+
+# build artefacts
+build/
+dist/
+*.spec
+bin/
+# a stray copy of the 229 MB build outside dist/ would bloat this repo forever
+*.exe
+*.dll
+*.pyd
+*.app/
+# rendered from assets/icon.png at build time, and only on a Mac — committing
+# it would leave a third copy of the artwork for someone to forget to redraw
+assets/icon.icns
+
+# local tooling — not part of the project
+.claude/
+.impeccable/
+
+# The folder guide the app drops beside its output. Lands here when run
+# from source, since the output root defaults to the working directory.
+READ ME - what is in here.txt
+
+# ClipMint's Google client for YouTube uploads, written by build_exe.py from a
+# secret. YouTube's API policies forbid credentials in open source projects.
+webapp/youtube_client.json
+
+# GitHub Pages output, built by site/build.py
+_site/

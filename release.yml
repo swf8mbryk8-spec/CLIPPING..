@@ -1,0 +1,897 @@
+# Builds the app for Windows and macOS and publishes both as one release.
+#
+#     git tag -a v1.6.0 -m "ClipMint v1.6.0"
+#     git push origin v1.6.0
+#
+# That is the whole release. Or, with no terminal: Actions -> Release -> Run
+# workflow on main, with the new tag typed in. The tag is made for you. The builds are made here rather than on a laptop,
+# which matters more than convenience now that the app updates itself: what
+# this workflow publishes is what every installed copy will download and run.
+# It is also the only way the mac build exists at all — PyInstaller cannot
+# cross-compile, and there is no Mac on this project's desk.
+#
+# Release notes come from docs/release-notes/<tag>.md when that file exists,
+# and from GitHub's generated commit summary when it does not.
+#
+# Dry run
+# -------
+# Run this workflow by hand with "dry run" ticked and it builds both apps,
+# checks them, and publishes nothing — the builds are attached to the run
+# instead. No tag needed; it uses whichever branch you picked.
+#
+# That exists because the mac build cannot be tested on this project's desk.
+# A dry run proves the parts a runner can prove: that it builds at all, that
+# the version and signature are right, that the bundled ffmpeg runs. It cannot
+# prove the app opens on a real Mac. Worth being clear which half you got.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and release (e.g. v1.6.0). Leave empty for a dry run of the current branch."
+        required: false
+        default: ""
+      dry_run:
+        description: "Dry run — build and check everything, publish nothing"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write        # needed to create the release
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false     # never kill a half-finished upload
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Work out what we are building, and whether to publish it
+        id: tag
+        shell: bash
+        run: |
+          tag="${{ inputs.tag }}"
+          dry="${{ inputs.dry_run }}"
+
+          # A tag push is always a real release. Nothing else can make it one.
+          if [ "${{ github.event_name }}" = "push" ]; then
+            tag="${GITHUB_REF#refs/tags/}"
+            dry="false"
+          fi
+
+          # Publishing without a tag has nothing to attach the release to, and
+          # is more likely a forgotten field than an intention.
+          if [ "$dry" != "true" ] && [ -z "$tag" ]; then
+            echo "::error::Publishing needs a tag. Give one, or tick 'dry run' to build without publishing."
+            exit 1
+          fi
+
+          if [ "$dry" = "true" ]; then publish="false"; else publish="true"; fi
+          ref="${tag:-${{ github.ref_name }}}"
+
+          echo "tag:     ${tag:-(none)}"
+          echo "ref:     $ref"
+          echo "publish: $publish"
+          {
+            echo "name=$tag"
+            echo "ref=$ref"
+            echo "publish=$publish"
+          } >> "$GITHUB_OUTPUT"
+
+      # Started by hand with a tag that does not exist yet: make it, on the
+      # commit this run was started from, so a release can be cut from the
+      # Actions tab without a terminal. Only from the default branch -- a tag
+      # is what every installed copy updates to, and it must not point at a
+      # branch nobody merged. The macOS and Linux jobs wait for this one, so
+      # the tag exists by the time they check it out. A tag made with the
+      # workflow's own token does not start a second run.
+      - name: Create the tag if it does not exist yet
+        if: github.event_name == 'workflow_dispatch' && steps.tag.outputs.publish == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ steps.tag.outputs.name }}"
+          if gh api "repos/${{ github.repository }}/git/ref/tags/$tag" >/dev/null 2>&1; then
+            echo "$tag already exists"
+            exit 0
+          fi
+          if [ "${{ github.ref_name }}" != "${{ github.event.repository.default_branch }}" ]; then
+            echo "::error::$tag does not exist, and a new tag is only made from ${{ github.event.repository.default_branch }}. Run this from there."
+            exit 1
+          fi
+          gh api "repos/${{ github.repository }}/git/refs" \
+            -f ref="refs/tags/$tag" -f sha="${{ github.sha }}" >/dev/null
+          echo "created $tag at ${{ github.sha }}"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.tag.outputs.ref }}
+          fetch-depth: 0
+
+      # The updater compares the tag on the newest release against the version
+      # compiled into the running build. If those disagree, every user is
+      # offered an update that installs the version they already have and then
+      # offers it again. Catching that here costs a second; catching it after
+      # release means pulling a build back from people who already took it.
+      - name: Refuse to build if the tag and the code disagree
+        if: steps.tag.outputs.publish == 'true'
+        shell: bash
+        run: |
+          tag="${{ steps.tag.outputs.name }}"
+          code=$(python -c "import re,io; s=io.open('shorts_generator/version.py',encoding='utf-8').read(); print(re.search(r'APP_VERSION\s*=\s*\"([^\"]+)\"', s).group(1))")
+          echo "tag:  $tag"
+          echo "code: $code"
+          if [ "$tag" != "v$code" ]; then
+            echo "::error::Tag $tag does not match APP_VERSION $code in shorts_generator/version.py."
+            echo "::error::Bump version.py and version_info.txt, then retag."
+            exit 1
+          fi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      # -c constraints.txt pins every package to the version the last good
+      # release shipped. Without it this installs whatever was published
+      # overnight -- which is how v1.24.1 shipped PyAV 19 and broke every
+      # transcription. All three platform jobs use it.
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-web.txt pyinstaller -c constraints.txt
+
+      # bin/ is gitignored -- it is 200 MB of binaries that do not belong in
+      # git -- so the runner fetches its own copy. build_exe.py bundles
+      # whatever it finds there, and without it the exe would ship expecting
+      # ffmpeg to already be on the user's PATH, which is the whole thing this
+      # app promises not to require.
+      - name: Fetch ffmpeg
+        shell: pwsh
+        run: |
+          # Retried, because this is one small web host standing between a
+          # pushed tag and a release. A 503 from it killed the v1.9.0 build
+          # outright -- nothing to do with the code, and the only recourse was
+          # noticing and re-running by hand. The mac job has always used
+          # `curl --retry 3`; this is the same idea, backing off further each
+          # time so a host that is briefly overloaded gets a real chance.
+          #
+          # A download that "succeeds" is not yet an archive, either: the
+          # v1.11.0 Linux build got a normal response whose body was an error
+          # page, and died unpacking it. So unpacking is part of the attempt --
+          # an archive that will not open, or has no ffmpeg.exe in it, is
+          # thrown away and fetched again like any other failure.
+          $url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+          $ok = $false
+          foreach ($attempt in 1..5) {
+            try {
+              Write-Host "downloading $url (attempt $attempt of 5)"
+              # Bounded, so a transfer that stalls fails this attempt instead
+              # of waiting out the job's whole time limit.
+              Invoke-WebRequest -Uri $url -OutFile ffmpeg.zip -UseBasicParsing -TimeoutSec 600
+              Expand-Archive ffmpeg.zip -DestinationPath ffmpeg-tmp -Force
+              if (-not (Get-ChildItem ffmpeg-tmp -Recurse -Filter ffmpeg.exe)) {
+                throw "the archive has no ffmpeg.exe in it"
+              }
+              $ok = $true
+              break
+            } catch {
+              $why = $_.Exception.Message -split "`n" | Select-Object -First 1
+              Write-Host "  failed: $why"
+              Remove-Item ffmpeg.zip, ffmpeg-tmp -Recurse -Force -ErrorAction SilentlyContinue
+              if ($attempt -lt 5) { Start-Sleep -Seconds (15 * $attempt) }
+            }
+          }
+          if (-not $ok) { throw "could not download a working ffmpeg after 5 attempts" }
+          New-Item -ItemType Directory -Force -Path bin | Out-Null
+          Get-ChildItem ffmpeg-tmp -Recurse -Include ffmpeg.exe, ffprobe.exe |
+            ForEach-Object { Copy-Item $_.FullName -Destination bin }
+          Remove-Item ffmpeg.zip, ffmpeg-tmp -Recurse -Force
+          if (-not (Test-Path bin/ffmpeg.exe)) { throw "ffmpeg.exe was not in the archive" }
+          & ./bin/ffmpeg.exe -version | Select-Object -First 1
+          # Captions need libass. A build without it renders every clip
+          # without them and says nothing, so it is caught here instead.
+          python .github/scripts/check_captions.py bin/ffmpeg.exe
+          if ($LASTEXITCODE -ne 0) { throw "the bundled ffmpeg cannot burn captions" }
+
+      # --onefile is what the release ships and what the updater can replace.
+      # It deliberately leaves CUDA out: a one-file build re-extracts its whole
+      # payload on every launch, so bundled CUDA would cost every user startup
+      # time for something only NVIDIA owners can use.
+      - name: Build the exe
+        env:
+          # ClipMint's Google client for YouTube uploads. A secret, never a
+          # file in the repo: YouTube's API policies forbid credentials in open
+          # source projects. Unset, the build still works and users bring their own.
+          CLIPMINT_YOUTUBE_CLIENT: ${{ secrets.CLIPMINT_YOUTUBE_CLIENT }}
+        run: python build_exe.py --onefile
+
+      - name: Check the built exe reports the right version
+        shell: pwsh
+        run: |
+          $exe = "dist/ClipMint.exe"
+          if (-not (Test-Path $exe)) { throw "the build produced no exe" }
+          $v = (Get-Item $exe).VersionInfo.FileVersion
+          # A dry run has no tag to check against, so the exe is held to what
+          # the source says instead. Still worth checking: it is the number the
+          # updater will compare against, whatever built it.
+          $want = "${{ steps.tag.outputs.name }}".TrimStart("v")
+          if (-not $want) {
+            $src = Get-Content shorts_generator/version.py -Raw
+            $want = [regex]::Match($src, 'APP_VERSION\s*=\s*"([^"]+)"').Groups[1].Value
+            Write-Host "dry run — checking against APP_VERSION ($want), not a tag"
+          }
+          $size = [math]::Round((Get-Item $exe).Length / 1MB)
+          $sha = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower()
+          Write-Host "version: $v   size: $size MB"
+          Write-Host "sha256:  $sha"
+          if ($v -ne $want) { throw "exe reports $v, expected $want" }
+          "SHA256=$sha" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      # A dry run's whole point is to produce something to look at without
+      # putting it in front of users. Seven days is long enough to inspect and
+      # short enough that a habit of dry runs does not fill the account with
+      # quarter-gigabyte builds nobody asked to keep.
+      - name: Attach the build to this run instead
+        if: steps.tag.outputs.publish != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ClipMint-windows
+          path: dist/ClipMint.exe
+          retention-days: 7
+
+      - name: Publish the release
+        if: steps.tag.outputs.publish == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ steps.tag.outputs.name }}"
+          notes="docs/release-notes/${tag}.md"
+          args=(--title "ClipMint ${tag}")
+          # Every install from v1.5.0 to v1.14.1 asks the API for an asset
+          # named StreamToShorts.exe and goes quiet when it is not there. A
+          # byte-identical copy under the old name is what keeps those users
+          # on the update path instead of stranding them on the build they
+          # have. It can go once the download count for it stops moving.
+          cp dist/ClipMint.exe dist/StreamToShorts.exe
+          if [ -f "$notes" ]; then
+            echo "using $notes"
+            args+=(--notes-file "$notes")
+          else
+            echo "no $notes — generating notes from commits"
+            args+=(--generate-notes)
+          fi
+          # Re-running a release should update it, not fail on "already exists".
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "release exists — replacing the asset"
+            gh release upload "$tag" dist/ClipMint.exe dist/StreamToShorts.exe --clobber
+          else
+            gh release create "$tag" dist/ClipMint.exe dist/StreamToShorts.exe "${args[@]}"
+          fi
+
+      - name: Summary
+        shell: bash
+        run: |
+          tag="${{ steps.tag.outputs.name }}"
+          {
+            if [ "${{ steps.tag.outputs.publish }}" = "true" ]; then
+              echo "### Released $tag"
+              echo ""
+              echo "- \`ClipMint.exe\` — SHA-256 \`$SHA256\`"
+              echo "- Every installed copy from v1.5.0 onward will offer this build."
+              echo "- <https://github.com/${{ github.repository }}/releases/tag/$tag>"
+            else
+              echo "### Dry run — Windows build (nothing published)"
+              echo ""
+              echo "- \`ClipMint.exe\` — SHA-256 \`$SHA256\`"
+              echo "- Attached to this run for 7 days. No release was created or touched."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  macos:
+    # The Windows job is what creates the release; this one only adds to it.
+    # Both trying to create it is a race, and the loser fails on "already
+    # exists" after an hour of work.
+    #
+    # A dry run publishes nothing, so there is no race to avoid and no reason
+    # for a Windows failure to hide a mac one. Finding out about both in a
+    # single run beats finding out about them in two.
+    #
+    # `== true`, not `== 'true'`: a boolean input is a real boolean here, and
+    # GitHub compares mixed types by casting to a number, where 'true' is NaN
+    # and never equal to anything. Inside a `run:` block the same input
+    # interpolates as text and *is* compared to "true" — the two look
+    # inconsistent and are both correct.
+    needs: windows
+    if: ${{ !cancelled() && (needs.windows.result == 'success' || inputs.dry_run == true) }}
+    runs-on: macos-latest       # Apple Silicon, and so is what it produces
+    timeout-minutes: 90
+
+    steps:
+      - name: Work out what we are building, and whether to publish it
+        id: tag
+        run: |
+          tag="${{ inputs.tag }}"
+          dry="${{ inputs.dry_run }}"
+
+          if [ "${{ github.event_name }}" = "push" ]; then
+            tag="${GITHUB_REF#refs/tags/}"
+            dry="false"
+          fi
+
+          if [ "$dry" = "true" ]; then publish="false"; else publish="true"; fi
+          ref="${tag:-${{ github.ref_name }}}"
+
+          echo "tag:     ${tag:-(none)}"
+          echo "ref:     $ref"
+          echo "publish: $publish"
+          {
+            echo "name=$tag"
+            echo "ref=$ref"
+            echo "publish=$publish"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.tag.outputs.ref }}
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-web.txt pyinstaller -c constraints.txt
+
+      # Static arm64 builds, because the obvious alternative is not one: a
+      # Homebrew ffmpeg links against dylibs in /opt/homebrew, so bundling it
+      # would ship an app that runs here and nowhere else. Pinned rather than
+      # "latest" so a release cannot silently change what it carries.
+      - name: Fetch ffmpeg
+        run: |
+          mkdir -p bin
+          # curl --retry only retries what looks like a failure. A host that
+          # answers with an error page instead of the file looks like success
+          # -- that is what killed the v1.11.0 Linux build -- so every attempt
+          # is tested as a zip before it counts, and fetched again if not.
+          fetch() {
+            name="$1"; url="$2"
+            for attempt in 1 2 3 4 5; do
+              echo "downloading $url (attempt $attempt of 5)"
+              # Bounded too: a stalled transfer is a failed attempt, not a
+              # step that waits out the job's whole time limit.
+              if curl -fsSL --retry 3 --retry-delay 5 --connect-timeout 30 --max-time 600 \
+                      --speed-limit 100000 --speed-time 60 -o "$name.zip" "$url" \
+                 && unzip -tq "$name.zip" > /dev/null; then
+                break
+              fi
+              echo "  not a usable archive"
+              rm -f "$name.zip"
+              if [ "$attempt" -eq 5 ]; then
+                echo "::error::could not download a working $name from $url after 5 attempts"
+                exit 1
+              fi
+              sleep $((15 * attempt))
+            done
+            rm -rf ffmpeg-tmp && mkdir ffmpeg-tmp
+            unzip -oq "$name.zip" -d ffmpeg-tmp
+            found=$(find ffmpeg-tmp -type f -name "$name" | head -1)
+            if [ -z "$found" ]; then
+              echo "::error::$name was not in $url"
+              exit 1
+            fi
+            mv "$found" "bin/$name"
+            chmod +x "bin/$name"
+            rm -rf "$name.zip" ffmpeg-tmp
+          }
+          fetch ffmpeg  https://www.osxexperts.net/ffmpeg711arm.zip
+          fetch ffprobe https://www.osxexperts.net/ffprobe711arm.zip
+
+          # An x86_64 binary in an arm64 app is not a build failure, it is a
+          # user needing Rosetta for a tool they were promised was included.
+          file bin/ffmpeg bin/ffprobe
+          if ! file bin/ffmpeg | grep -q arm64; then
+            echo "::error::bin/ffmpeg is not an arm64 binary"
+            exit 1
+          fi
+          ./bin/ffmpeg -version | head -1
+          # A warning rather than a failure on the beta: a mac build without
+          # captions is still worth shipping, and this says so in the run.
+          python .github/scripts/check_captions.py bin/ffmpeg --warn-only
+
+      # No --onefile: a mac release ships the .app bundle. build_exe.py stamps
+      # the version into Info.plist and signs the result ad-hoc, which is what
+      # makes it launchable on Apple Silicon at all.
+      - name: Build the app
+        env:
+          # ClipMint's Google client for YouTube uploads. A secret, never a
+          # file in the repo: YouTube's API policies forbid credentials in open
+          # source projects. Unset, the build still works and users bring their own.
+          CLIPMINT_YOUTUBE_CLIENT: ${{ secrets.CLIPMINT_YOUTUBE_CLIENT }}
+        run: python build_exe.py
+
+      - name: Check the built app is what it claims to be
+        run: |
+          app="dist/ClipMint.app"
+          if [ ! -d "$app" ]; then
+            echo "::error::the build produced no .app"
+            exit 1
+          fi
+
+          v=$(plutil -extract CFBundleShortVersionString raw "$app/Contents/Info.plist")
+          want="${{ steps.tag.outputs.name }}"
+          want="${want#v}"
+          # A dry run has no tag, so the bundle is held to what the source
+          # says instead of skipping the check entirely.
+          if [ -z "$want" ]; then
+            want=$(python -c "import re,io; s=io.open('shorts_generator/version.py',encoding='utf-8').read(); print(re.search(r'APP_VERSION\s*=\s*\"([^\"]+)\"', s).group(1))")
+            echo "dry run — checking against APP_VERSION ($want), not a tag"
+          fi
+          echo "Info.plist version: $v"
+          if [ "$v" != "$want" ]; then
+            echo "::error::the app reports $v, expected $want"
+            exit 1
+          fi
+
+          # A broken signature is not visible until a user's Mac refuses to
+          # open the thing, by which point it is on the releases page.
+          codesign --verify --deep --strict --verbose=2 "$app"
+
+          # And prove ffmpeg both survived the bundling and can still run,
+          # since it is the piece that arrives as a resource and has to be
+          # chmod'd and signed back into being a program.
+          ff=$(find "$app" -type f -name ffmpeg | head -1)
+          if [ -z "$ff" ]; then
+            echo "::error::the bundle has no ffmpeg in it"
+            exit 1
+          fi
+          echo "bundled ffmpeg: ${ff#dist/}"
+          "$ff" -version | head -1
+
+      # ditto, not zip, and ditto for the copy as well: a .app is full of
+      # symlinks and carries a signature that plain zip mangles, and a mangled
+      # signature is an app that will not open. cp would be the same mistake
+      # one step earlier, so the staging folder is filled with ditto too and
+      # the signature is checked again afterwards rather than assumed.
+      #
+      # The archive holds a folder now rather than the bare .app, so the
+      # instructions can travel with it. Nobody reads a file on a releases
+      # page; they read the one sitting next to the thing they just unzipped.
+      # This build in particular has a first launch that is *supposed* to
+      # fail, and being told that beforehand is the difference between a
+      # Gatekeeper dialog and a deleted download.
+      - name: Zip the bundle, with the instructions beside it
+        run: |
+          set -e
+          rm -rf stage
+          mkdir -p stage/ClipMint
+          need() {
+          if [ ! -f "$1" ]; then
+            echo "::error::$1 is missing from this checkout."
+            echo "::error::Rebuilding a tag from before it was added? The"
+            echo "::error::workflow comes from the branch and the code comes"
+            echo "::error::from the tag, so they can disagree about what exists."
+            exit 1
+          fi
+          }
+          need docs/install/macos.txt
+
+          ditto dist/ClipMint.app stage/ClipMint/ClipMint.app
+          cp docs/install/macos.txt "stage/ClipMint/READ ME FIRST.txt"
+
+          # The copy still has to be the app that was signed a step ago.
+          codesign --verify --deep --strict stage/ClipMint/ClipMint.app
+
+          ditto -c -k --sequesterRsrc --keepParent \
+            stage/ClipMint ClipMint-macOS-arm64.zip
+          ls -lh ClipMint-macOS-arm64.zip
+          # The pre-rename name, for installs whose updater still asks
+          # for it. A mac build cannot replace itself, so this copy is
+          # what makes the "there is a new version" notice appear for
+          # them at all.
+          cp ClipMint-macOS-arm64.zip StreamToShorts-macOS-arm64.zip
+          shasum -a 256 ClipMint-macOS-arm64.zip
+          echo "SHA256=$(shasum -a 256 ClipMint-macOS-arm64.zip | cut -d' ' -f1)" >> "$GITHUB_ENV"
+
+      - name: Attach the build to this run instead
+        if: steps.tag.outputs.publish != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ClipMint-macos-arm64
+          path: ClipMint-macOS-arm64.zip
+          retention-days: 7
+
+      - name: Add it to the release
+        if: steps.tag.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ steps.tag.outputs.name }}" \
+            ClipMint-macOS-arm64.zip \
+            StreamToShorts-macOS-arm64.zip --clobber
+
+      - name: Summary
+        run: |
+          {
+            if [ "${{ steps.tag.outputs.publish }}" = "true" ]; then
+              echo "### macOS build (beta)"
+            else
+              echo "### Dry run — macOS build (nothing published)"
+            fi
+            echo ""
+            echo "- \`ClipMint-macOS-arm64.zip\` — SHA-256 \`$SHA256\`"
+            echo "- Unzips to a **ClipMint** folder: the app, and"
+            echo "  \`READ ME FIRST.txt\` explaining the first launch it is about"
+            echo "  to be refused by."
+            echo "- **Never run on a Mac.** What passed here is what a runner can"
+            echo "  check — it builds, the version matches, the signature verifies,"
+            echo "  the bundled ffmpeg runs. Nobody has opened the app."
+            echo "- Apple Silicon only, and signed ad-hoc rather than notarised —"
+            echo "  first launch needs System Settings → Privacy & Security → Open Anyway."
+            echo "- The mac app checks for updates but does not install them."
+            if [ "${{ steps.tag.outputs.publish }}" = "true" ]; then
+              echo "- Say in the release notes that this build is a beta."
+            else
+              echo "- Attached to this run for 7 days. No release was created or touched."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  linux:
+    # Same reasoning as the mac job: the Windows job is what creates the
+    # release, and this one only adds to it.
+    needs: windows
+    if: ${{ !cancelled() && (needs.windows.result == 'success' || inputs.dry_run == true) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    # Built inside 22.04 rather than on whatever the runner happens to be.
+    #
+    # PyInstaller does not bundle libc. It links against the one on the build
+    # machine, and glibc is only backward compatible -- so a build made on
+    # 24.04 dies on 22.04 with "version `GLIBC_2.38' not found", before a line
+    # of this app runs, on a distribution supported until 2027. Choosing the
+    # floor here rather than inheriting it also means GitHub retiring a runner
+    # image cannot quietly move it.
+    container: ubuntu:22.04
+
+    steps:
+      # A bare distribution image, so even checkout's dependencies are absent.
+      # gh comes from its own release rather than an apt repository: one
+      # pinned tarball beats a keyring, a source list and a second apt update.
+      #
+      # libgl1 and libglib2.0-0 are for OpenCV, not for anything on this
+      # runner's screen -- there isn't one. PyInstaller works out what to
+      # bundle by importing the package, and `import cv2` on a machine without
+      # libGL.so.1 does not fail quietly: it raises, the hook collects nothing,
+      # and the build either dies or produces something missing the cascade
+      # files that face tracking loads by path.
+      - name: Things the container does not ship
+        run: |
+          set -e
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq
+          apt-get install -y --no-install-recommends \
+            git curl ca-certificates xz-utils binutils file \
+            libgl1 libglib2.0-0
+          curl -fsSL -o /tmp/gh.tar.gz \
+            https://github.com/cli/cli/releases/download/v2.63.2/gh_2.63.2_linux_amd64.tar.gz
+          tar xzf /tmp/gh.tar.gz -C /tmp
+          install /tmp/gh_2.63.2_linux_amd64/bin/gh /usr/local/bin/gh
+          gh --version | head -1
+
+          # The workspace belongs to the runner's own user and everything in
+          # here runs as root, which git reads as tampering and refuses to
+          # touch. Only a container hits this, and it stays invisible until
+          # something shells out to git -- which, in this job, is gh, nine
+          # minutes in and one step from the finish.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Work out what we are building, and whether to publish it
+        id: tag
+        run: |
+          tag="${{ inputs.tag }}"
+          dry="${{ inputs.dry_run }}"
+
+          if [ "${{ github.event_name }}" = "push" ]; then
+            tag="${GITHUB_REF#refs/tags/}"
+            dry="false"
+          fi
+
+          if [ "$dry" = "true" ]; then publish="false"; else publish="true"; fi
+          ref="${tag:-${{ github.ref_name }}}"
+
+          echo "tag:     ${tag:-(none)}"
+          echo "ref:     $ref"
+          echo "publish: $publish"
+          {
+            echo "name=$tag"
+            echo "ref=$ref"
+            echo "publish=$publish"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.tag.outputs.ref }}
+          fetch-depth: 0
+
+      # Not actions/setup-python. Its prebuilt interpreters are linked against
+      # glibc 2.38 now, so the one machine they cannot run on is the 22.04
+      # container that exists to hold the floor at 2.35 -- it dies on the first
+      # `python`, with the very error this container is here to spare users.
+      #
+      # uv's managed interpreters are python-build-standalone builds targeting
+      # glibc 2.17. Measured: the interpreter 2.17, libpython 2.17 -- that
+      # being exactly where setup-python's 2.38 came from -- and the wheels
+      # 2.34 at the highest. So nothing in the toolchain sets the floor, which
+      # leaves the container's own libraries setting it. That was the point.
+      - name: Python, and dependencies
+        run: |
+          set -e
+          curl -LsSf https://astral.sh/uv/install.sh             | env UV_INSTALL_DIR=/usr/local/bin sh
+          uv --version
+          uv venv --python 3.13 /opt/venv
+          uv pip install --python /opt/venv/bin/python             -r requirements-web.txt pyinstaller -c constraints.txt
+          echo "/opt/venv/bin" >> "$GITHUB_PATH"
+          /opt/venv/bin/python --version
+
+      # Statically linked, which is the whole point: a distribution's own
+      # ffmpeg links against that distribution's libraries, so bundling one
+      # would ship an app that runs on Ubuntu and nowhere else. These carry no
+      # dependencies at all, not even libc.
+      #
+      # Not pinned, unlike the mac job's, because this host publishes only its
+      # current release under a stable name. The version that arrived is
+      # printed here and carried into the release summary, so what shipped is
+      # on the record even though it was not chosen.
+      - name: Fetch ffmpeg
+        run: |
+          set -e
+          mkdir -p bin
+          # curl --retry only retries what looks like a failure. The v1.11.0
+          # build got a response whose body was not an archive -- this host
+          # briefly serving an error page -- and died in tar, with the Windows
+          # and mac builds already published. So each attempt is tested as a
+          # whole xz archive before it counts, and fetched again if not.
+          url=https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz
+          ok=""
+          for attempt in 1 2 3 4 5; do
+            echo "downloading $url (attempt $attempt of 5)"
+            # And bounded. v1.11.1's first build sat in this step for over
+            # forty minutes on a transfer that stalled rather than failed: with
+            # no limit curl waits forever, and the loop never gets its turn. A
+            # stall -- under 100 KB/s for a minute -- or ten minutes in total
+            # is now a failed attempt like any other.
+            if curl -fsSL --retry 3 --retry-delay 10 --connect-timeout 30 --max-time 600 \
+                    --speed-limit 100000 --speed-time 60 -o ffmpeg.tar.xz "$url" \
+               && xz -t ffmpeg.tar.xz; then
+              ok=1
+              break
+            fi
+            echo "  not a usable archive: $(head -c 200 ffmpeg.tar.xz 2>/dev/null | tr -dc '[:print:]' | head -c 80)"
+            rm -f ffmpeg.tar.xz
+            if [ "$attempt" -lt 5 ]; then sleep $((20 * attempt)); fi
+          done
+          if [ -z "$ok" ]; then
+            echo "::error::could not download a working ffmpeg archive after 5 attempts"
+            exit 1
+          fi
+          mkdir -p ffmpeg-tmp
+          tar -xf ffmpeg.tar.xz -C ffmpeg-tmp
+          for tool in ffmpeg ffprobe; do
+            found=$(find ffmpeg-tmp -type f -name "$tool" | head -1)
+            if [ -z "$found" ]; then
+              echo "::error::$tool was not in the archive"
+              exit 1
+            fi
+            mv "$found" "bin/$tool"
+            chmod +x "bin/$tool"
+          done
+          rm -rf ffmpeg.tar.xz ffmpeg-tmp
+
+          # A dynamically linked ffmpeg here is not a build failure. It is a
+          # user finding out, on their first clip, that it cannot start.
+          file bin/ffmpeg
+          if ! file bin/ffmpeg | grep -q "statically linked"; then
+            echo "::error::bin/ffmpeg is not statically linked"
+            exit 1
+          fi
+          ff=$(./bin/ffmpeg -version | head -1)
+          echo "$ff"
+          echo "FFMPEG=$ff" >> "$GITHUB_ENV"
+          # Captions need libass; see the Windows job.
+          python .github/scripts/check_captions.py bin/ffmpeg
+
+      # --onefile, as on Windows and for the same reason: it is the only shape
+      # the updater can replace. Linux makes that easier rather than harder --
+      # a running binary can be swapped underneath itself there.
+      - name: Build the app
+        env:
+          # ClipMint's Google client for YouTube uploads. A secret, never a
+          # file in the repo: YouTube's API policies forbid credentials in open
+          # source projects. Unset, the build still works and users bring their own.
+          CLIPMINT_YOUTUBE_CLIENT: ${{ secrets.CLIPMINT_YOUTUBE_CLIENT }}
+        run: python build_exe.py --onefile
+
+      - name: Check what came out
+        run: |
+          set -e
+          app="dist/ClipMint"
+          if [ ! -f "$app" ]; then
+            echo "::error::the build produced no binary"
+            exit 1
+          fi
+          file "$app"
+
+          # No glibc check here: the binary cannot answer that question. See
+          # the step below, which asks it at the only moment it can be asked.
+          # Divided by 1024s, not 1000s, and still called MB -- because that
+          # is what the releases page shows, what every file manager shows,
+          # and therefore what the README says about the other two builds.
+          # Reporting the decimal figure here would make this build look 5%
+          # heavier than the other two on the same page, from nothing but a
+          # change of unit halfway down it.
+          size=$(( $(stat -c%s "$app") / 1048576 ))
+          echo "size: $size MB"
+          echo "SIZE=$size" >> "$GITHUB_ENV"
+
+      # The one check the other two jobs cannot make. This app is a server
+      # behind a window, and on Linux there is no window -- so a runner can
+      # start the real binary and ask it for the real interface. That covers
+      # unpacking, every import, the port bind and the routes: the things that
+      # go wrong at a user's first launch and nowhere earlier.
+      - name: Start it, ask it for the interface, measure what it needs
+        run: |
+          set -e
+          cp dist/ClipMint ClipMint-linux-x86_64
+          ./ClipMint-linux-x86_64 > run.log 2>&1 &
+          pid=$!
+
+          for _ in $(seq 1 180); do
+            grep -q "starting engine on" run.log && break
+            if ! kill -0 "$pid" 2>/dev/null; then
+              echo "::error::it exited before it said anything"
+              cat run.log
+              exit 1
+            fi
+            sleep 1
+          done
+
+          url=$(grep -o "http://127.0.0.1:[0-9]*" run.log | head -1)
+          if [ -z "$url" ]; then
+            echo "::error::it never reported a URL within 180s"
+            cat run.log
+            kill "$pid" 2>/dev/null || true
+            exit 1
+          fi
+          echo "it says it is on $url"
+
+          if ! curl -fsS --retry 20 --retry-delay 2 --retry-connrefused "$url/" -o page.html; then
+            echo "::error::nothing answered on $url"
+            cat run.log
+            kill "$pid" 2>/dev/null || true
+            exit 1
+          fi
+          # The glibc floor, taken while there is something to take it from.
+          #
+          # objdump on the binary itself answers GLIBC_2.14 and means nothing
+          # by it: a one-file build is a bootloader with a compressed archive
+          # stapled on, and every library carrying a real requirement is inside
+          # that archive, invisible until it is unpacked. Measured on a 26.04
+          # machine the bootloader still said 2.14 while the payload needed
+          # 2.43 -- so the obvious check is not merely weak, it passes builds
+          # that cannot start anywhere they claim to run.
+          #
+          # It is unpacked right now, because the app is running. This is the
+          # one moment the question can be answered honestly.
+          mei=$(ls -d /tmp/_MEI* 2>/dev/null | head -1)
+          floor=$(find "$mei" -type f \( -name '*.so' -o -name '*.so.*' \) -print0 \
+                  | xargs -0 -r objdump -T 2>/dev/null \
+                  | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1)
+          kill "$pid" 2>/dev/null || true
+
+          if [ -z "$floor" ]; then
+            echo "::error::could not read the payload's glibc requirement"
+            exit 1
+          fi
+          echo "the payload needs $floor"
+          highest=$(printf 'GLIBC_2.35\n%s\n' "$floor" | sort -V | tail -1)
+          if [ "$highest" != "GLIBC_2.35" ]; then
+            echo "::error::this build needs $floor, above the GLIBC_2.35 floor"
+            echo "::error::something changed the container it is built in"
+            exit 1
+          fi
+          echo "GLIBC=$floor" >> "$GITHUB_ENV"
+
+          if ! grep -qi "<html" page.html; then
+            echo "::error::something answered, but not with the interface"
+            head -40 page.html
+            exit 1
+          fi
+          echo "it served $(stat -c%s page.html) bytes of interface"
+          echo "SHA256=$(sha256sum ClipMint-linux-x86_64 | cut -d' ' -f1)" >> "$GITHUB_ENV"
+
+      # A second file rather than an archive around the first. The updater
+      # downloads this asset, makes it executable and swaps it into place, so
+      # the binary has to stay exactly a binary -- wrapping it in a tarball to
+      # fit a readme inside would mean teaching the update path to unwrap one,
+      # on every future release, to solve a problem that a second file solves
+      # for nothing.
+      - name: Put the instructions next to it
+        run: |
+          set -e
+          need() {
+          if [ ! -f "$1" ]; then
+            echo "::error::$1 is missing from this checkout."
+            echo "::error::Rebuilding a tag from before it was added? The"
+            echo "::error::workflow comes from the branch and the code comes"
+            echo "::error::from the tag, so they can disagree about what exists."
+            exit 1
+          fi
+          }
+          need docs/install/linux.txt
+          cp docs/install/linux.txt ClipMint-linux-README.txt
+          # Same reason as the exe: older installs look for this name.
+          cp ClipMint-linux-x86_64 StreamToShorts-linux-x86_64
+
+      - name: Attach the build to this run instead
+        if: steps.tag.outputs.publish != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ClipMint-linux-x86_64
+          path: |
+            ClipMint-linux-x86_64
+            ClipMint-linux-README.txt
+          retention-days: 7
+
+      - name: Add it to the release
+        if: steps.tag.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # -R, rather than letting gh work out the repository from the git
+          # remotes. It cannot do that without git, and this repository has a
+          # fork parent that gh reaches for first when it can.
+          gh release upload "${{ steps.tag.outputs.name }}" \
+            ClipMint-linux-x86_64 \
+            ClipMint-linux-README.txt \
+            StreamToShorts-linux-x86_64 \
+            --clobber -R "${{ github.repository }}"
+
+      - name: Summary
+        run: |
+          {
+            if [ "${{ steps.tag.outputs.publish }}" = "true" ]; then
+              echo "### Linux build"
+            else
+              echo "### Dry run — Linux build (nothing published)"
+            fi
+            echo ""
+            echo "- \`ClipMint-linux-x86_64\` — ${SIZE} MB, SHA-256 \`$SHA256\`"
+            echo "- Started here, and served its interface when asked."
+            echo "- x86-64, needs $GLIBC or newer — Ubuntu 22.04, Debian 12,"
+            echo "  Fedora 36, and anything after them."
+            echo "- Also needs \`libGL.so.1\` for OpenCV. Every desktop has it;"
+            echo "  a headless box wants \`apt install libgl1\`."
+            echo "- Carries $FFMPEG, statically linked."
+            echo "- Opens the default browser rather than a window: WebKit2GTK"
+            echo "  cannot be bundled portably, and a working browser beats a"
+            echo "  blank window. Running from source with python3-gi installed"
+            echo "  still gets a real window."
+            echo "- \`chmod +x\` it and run it. It updates itself from then on."
+            echo "- \`ClipMint-linux-README.txt\` is the same instructions,"
+            echo "  published beside it — the binary cannot carry them itself."
+            if [ "${{ steps.tag.outputs.publish }}" != "true" ]; then
+              echo "- Attached to this run for 7 days. No release was created or touched."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

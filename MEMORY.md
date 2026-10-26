@@ -1,0 +1,1 @@
+- [FreeLLM UI Integration and Testing](file.md) — Hooks FreeLLM settings into the UI dropdowns, key links, and save logic, ensuring proper persistence and error handling.
